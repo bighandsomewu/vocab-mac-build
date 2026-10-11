@@ -1,0 +1,157 @@
+name: 构建 macOS 版（真 macOS 构建机 + ad-hoc 签名）
+
+# 用法：本文件放到 .github/workflows/build-desktop.yml，配合同目录的 vocab-slim.db，
+#       在 Actions 页面点 "Run workflow"，十几分钟后在 Artifacts 里下载 dmg。
+#
+# 仓库里需要有：
+#   ① .github/workflows/build-desktop.yml   本文件
+#   ② 二选一：
+#        · vocab.db        完整题库（84MB，用 git push 推，网页上传传不了）
+#        · vocab-slim.db   0.23MB 瘦身题库（网页上传即可；语音会从 Gitee 仓库自动拉来合并）
+# 应用源码、636 段神经语音都从 Gitee 仓库自动拉取。
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_linux:
+        description: '顺带也构建 Linux 版'
+        type: boolean
+        default: false
+  push:
+    tags: ['v*']
+
+env:
+  GITEE_REPO: https://gitee.com/bighandsomewu/vocabulary_improvement.git
+
+jobs:
+  mac:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: 取应用源码与语音（从 Gitee）
+        run: |
+          git clone --depth 1 "$GITEE_REPO" src
+          ls src/Electron版 | head
+          ls src/web/audio | wc -l
+
+      - name: 准备数据库（有完整 vocab.db 就用它；否则用瘦身库 + Gitee 语音合出来）
+        run: |
+          if [ -f vocab.db ]; then
+            echo "✓ 仓库里有完整 vocab.db，直接使用"; ls -la vocab.db
+          else
+          echo "→ 用 vocab-slim.db + Gitee 语音合并"
+          python3 - <<'EOF'
+          import os, sqlite3, glob, re
+          con = sqlite3.connect('vocab-slim.db')
+          con.execute("delete from audio")
+          n = 0
+          for p in sorted(glob.glob('src/web/audio/*.mp3')):
+              m = re.match(r'^(\d+)-(.+)\.mp3$', os.path.basename(p))
+              if not m: continue
+              con.execute("insert into audio(item_id,voice,mime,seconds,engine,bytes) values(?,?,?,?,?,?)",
+                          (int(m.group(1)), m.group(2), 'audio/mpeg', 0.0, 'kokoro', open(p,'rb').read()))
+              n += 1
+          con.commit(); con.execute("vacuum"); con.commit(); con.close()
+          sz = os.path.getsize('vocab-slim.db')
+          print('合入 %d 段音频，vocab.db = %.1f MB' % (n, sz/1048576))
+          assert n > 600, '语音没拉全，检查 src/web/audio'
+          assert sz > 80_000_000, '数据库太小，语音可能没合进去'
+          os.rename('vocab-slim.db', 'vocab.db')
+          EOF
+          fi
+
+      - name: 准备构建目录
+        run: |
+          mkdir -p build/app build/res
+          cp -R "src/Electron版/." build/app/
+          rm -rf build/app/node_modules
+          cp vocab.db build/res/
+
+      - name: 安装依赖
+        working-directory: build/app
+        run: |
+          npm init -y >/dev/null 2>&1 || true
+          npm install --no-audit --no-fund nspell dictionary-en-us is-buffer
+          npm install --no-audit --no-fund --save-dev electron@40.10.2 electron-builder
+
+      - name: 编译 llama.cpp（Metal，本地 9B 引擎）
+        run: |
+          git clone --depth 1 https://github.com/ggml-org/llama.cpp
+          cd llama.cpp
+          cmake -B build -DGGML_METAL=ON -DCMAKE_BUILD_TYPE=Release -DLLAMA_CURL=OFF
+          cmake --build build -j4 --target llama-server
+          mkdir -p "$GITHUB_WORKSPACE/build/res/engine"
+          cp build/bin/llama-server "$GITHUB_WORKSPACE/build/res/engine/"
+
+      - name: 打包 dmg / zip
+        working-directory: build/app
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: |
+          npx electron-builder --mac dmg zip --publish never \
+            -c.directories.output=../out \
+            -c.extraResources[0].from=../res \
+            -c.extraResources[0].to=. \
+            -c.mac.target='[{target: dmg, arch: [arm64, x64]}, {target: zip, arch: [arm64, x64]}]'
+
+      - name: ad-hoc 签名（消掉"已损坏"，这步只有 macOS 能做）
+        run: |
+          find build/out -name "*.app" -type d | while read app; do
+            echo "签名: $app"
+            codesign --force --deep --sign - "$app"
+            codesign --verify --verbose=2 "$app" || true
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg
+          path: |
+            build/out/*.dmg
+            build/out/*.zip
+          if-no-files-found: warn
+
+  linux:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_linux }}
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: |
+          git clone --depth 1 "$GITEE_REPO" src
+          python3 - <<'EOF'
+          import os, sqlite3, glob, re
+          con = sqlite3.connect('vocab-slim.db'); con.execute("delete from audio")
+          n=0
+          for p in sorted(glob.glob('src/web/audio/*.mp3')):
+              m = re.match(r'^(\d+)-(.+)\.mp3$', os.path.basename(p))
+              if not m: continue
+              con.execute("insert into audio(item_id,voice,mime,seconds,engine,bytes) values(?,?,?,?,?,?)",
+                          (int(m.group(1)), m.group(2), 'audio/mpeg', 0.0, 'kokoro', open(p,'rb').read())); n+=1
+          con.commit(); con.execute("vacuum"); con.commit(); con.close()
+          os.rename('vocab-slim.db','vocab.db'); print('合入',n,'段')
+          EOF
+          mkdir -p build/app build/res && cp -R "src/Electron版/." build/app/ && rm -rf build/app/node_modules && cp vocab.db build/res/
+      - working-directory: build/app
+        run: |
+          npm init -y >/dev/null 2>&1 || true
+          npm install --no-audit --no-fund nspell dictionary-en-us is-buffer
+          npm install --no-audit --no-fund --save-dev electron@40.10.2 electron-builder
+      - run: |
+          git clone --depth 1 https://github.com/ggml-org/llama.cpp && cd llama.cpp
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DLLAMA_CURL=OFF && cmake --build build -j4 --target llama-server
+          mkdir -p "$GITHUB_WORKSPACE/build/res/engine" && cp build/bin/llama-server "$GITHUB_WORKSPACE/build/res/engine/"
+      - working-directory: build/app
+        run: |
+          npx electron-builder --linux AppImage --publish never \
+            -c.directories.output=../out -c.extraResources[0].from=../res -c.extraResources[0].to=.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-appimage
+          path: build/out/*.AppImage
+          if-no-files-found: warn
