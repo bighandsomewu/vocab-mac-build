@@ -65,6 +65,42 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
+      # 关键：签名结果直接传到 Gitee（这边下载快；GitHub 的产物存在 Azure，国内 0.04MB/s 下不动）
+      - name: 上传到 Gitee 发行版
+        env:
+          GT: ${{ secrets.GITEE_TOKEN }}
+        run: |
+          set -e
+          API="https://gitee.com/api/v5/repos/bighandsomewu/vocabulary_improvement"
+          TAG="macos-signed-v1.2.3"
+          ZIP=$(ls dist/*.zip | head -1)
+          echo "要传的文件: $ZIP  ($(stat -f%z "$ZIP") 字节)"
+          RID=$(curl -s -H "Authorization: Bearer $GT" "$API/releases/tags/$TAG" \
+                | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))" 2>/dev/null || true)
+          if [ -z "$RID" ]; then
+            RID=$(curl -s -X POST -H "Authorization: Bearer $GT" -H "Content-Type: application/json" \
+              -d "{\"tag_name\":\"$TAG\",\"name\":\"macOS 已签名包 1.2.3\",\"target_commitish\":\"master\"}" \
+              "$API/releases" | python3 -c "import sys,json;print(json.load(sys.stdin)['id'])")
+          fi
+          echo "release id=$RID"
+          mkdir -p parts && cd parts
+          split -b 95m --numeric-suffixes=1 --suffix-length=1 "../$ZIP" "signed.zip.part"
+          ls -la
+          for f in signed.zip.part*; do
+            echo "→ 上传 $f ($(stat -f%z "$f") 字节)"
+            curl -s -X POST -H "Authorization: Bearer $GT" \
+              -F "file=@$f;filename=$f" "$API/releases/$RID/attach_files" | head -c 150; echo
+          done
+          curl -s -X POST -H "Authorization: Bearer $GT" -F "file=@../dist/SHA256.txt;filename=SHA256.txt" \
+            "$API/releases/$RID/attach_files" >/dev/null
+          echo "✓ 已传到 Gitee: https://gitee.com/bighandsomewu/vocabulary_improvement/releases/tag/$TAG"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-signed-arm64
+          path: dist/*
+          if-no-files-found: error
+
       # 关键：把签名结果作为 Release 附件发出去 —— 这样国内可以用 ghfast.top 加速下载，
       # 不用再走 GitHub 的 artifacts（那个只从 Azure 走，国内极慢）。
       - name: 发布到 Release（便于国内加速下载）
