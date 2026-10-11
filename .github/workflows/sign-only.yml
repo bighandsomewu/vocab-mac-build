@@ -65,6 +65,40 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
+      # 关键：用 git push 把签名包推回 Gitee
+      # 为什么用 git 而不是 curl：runner 的出网被 Azure 网关拦，curl 到 gitee api 会被顶回
+      # InvalidAuthenticationInfo；但 git clone https://gitee.com 是通的（走另一条路），所以 push 大概率也能过。
+      # 推到一个独立分支，不污染 master。之后从本机 git clone 取回。
+      - name: 用 git push 把签名包推回 Gitee
+        env:
+          GT: ${{ secrets.GITEE_TOKEN }}
+        run: |
+          set -e
+          ZIP=$(ls dist/*.zip | head -1)
+          SRC="$(pwd)/$ZIP"
+          echo "要推的文件: $SRC  ($(stat -f%z "$SRC") 字节)"
+          rm -rf /tmp/push && mkdir -p /tmp/push && cd /tmp/push
+          # 切 45MB 片（Gitee 仓库单文件上限 50MB）
+          split -b 45m --numeric-suffixes=1 --suffix-length=2 "$SRC" signed.zip.part
+          cp "$(dirname "$SRC")/SHA256.txt" . 2>/dev/null || true
+          ls -la
+          git init -q
+          git config user.email "ci@local"
+          git config user.name "ci"
+          git checkout -q -b macos-signed-v1.2.3
+          git add -A
+          git commit -q -m "macOS 已签名包 1.2.3（arm64，分片，ad-hoc 签名）"
+          git remote add origin "https://bighandsomewu:${GT}@gitee.com/bighandsomewu/vocabulary_improvement.git"
+          git push -q -f origin macos-signed-v1.2.3
+          echo "✓ 已推到分支 macos-signed-v1.2.3"
+          echo "  本机取回: git clone -b macos-signed-v1.2.3 https://gitee.com/bighandsomewu/vocabulary_improvement.git"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-signed-arm64
+          path: dist/*
+          if-no-files-found: error
+
       # 关键：签名结果直接传到 Gitee（这边下载快；GitHub 的产物存在 Azure，国内 0.04MB/s 下不动）
       - name: 上传到 Gitee 发行版
         env:
