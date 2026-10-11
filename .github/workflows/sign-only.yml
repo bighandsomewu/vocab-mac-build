@@ -9,6 +9,9 @@ on:
   push:
     branches: [main, master]
 
+permissions:
+  contents: write            # 发 Release 需要写权限（新仓库默认是只读）
+
 jobs:
   sign:
     runs-on: macos-14
