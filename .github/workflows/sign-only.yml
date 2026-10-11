@@ -1,0 +1,63 @@
+name: 给 macOS 包做 ad-hoc 签名（最小流程，不装任何打包器）
+
+# 目的：交叉打包的 .app 在 Apple 芯片上会报"已损坏"，根因是缺 ad-hoc 签名。
+#       这个工作流只做一件事：下载已发布的 .app → codesign -s - → 重新打包 → 上传。
+#       全程只用 macOS 自带命令（curl / unzip / codesign / zip），不装 npm 包，不触发任何下载源。
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+
+jobs:
+  sign:
+    runs-on: macos-14
+    steps:
+      - name: 下载已发布的 macOS 包（arm64，3 个分片）
+        run: |
+          set -e
+          BASE="https://gitee.com/bighandsomewu/vocabulary_improvement/releases/download/macos-v1.2.3"
+          NAME="%E6%95%B4%E5%8F%A5%E9%BB%98%E5%86%99%E5%99%A8-1.2.3-macOS-arm64.zip"
+          for i in 1 2 3; do
+            echo "下载 part$i …"
+            curl -sL --retry 3 --max-time 600 -o "p$i" "$BASE/$NAME.part$i"
+            ls -la "p$i"
+          done
+          cat p1 p2 p3 > mac.zip
+          echo "拼好的 zip: $(stat -f%z mac.zip) 字节"
+          test "$(stat -f%z mac.zip)" -gt 200000000
+
+      - name: 解压
+        run: |
+          set -e
+          unzip -q mac.zip
+          ls -la
+          test -d "整句默写器.app"
+
+      - name: ad-hoc 签名（这一步就是全部目的）
+        run: |
+          set -e
+          APP="整句默写器.app"
+          echo "=== 签名前检查 ==="
+          codesign -dv "$APP" 2>&1 | head -5 || echo "（当前无签名，符合预期）"
+          echo "=== 执行 ad-hoc 签名 ==="
+          codesign --force --deep --sign - "$APP"
+          echo "=== 验证 ==="
+          codesign --verify --verbose=2 "$APP"
+          codesign -dv "$APP" 2>&1 | head -8
+
+      - name: 去掉隔离标记 + 重新打包
+        run: |
+          set -e
+          APP="整句默写器.app"
+          xattr -cr "$APP" || true
+          mkdir -p dist
+          zip -q -r -y "dist/整句默写器-1.2.3-macOS-arm64-已签名.zip" "$APP"
+          ls -la dist/
+          shasum -a 256 "dist/整句默写器-1.2.3-macOS-arm64-已签名.zip" | tee dist/SHA256.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-signed-arm64
+          path: dist/*
+          if-no-files-found: error
