@@ -61,3 +61,19 @@ jobs:
           name: macos-signed-arm64
           path: dist/*
           if-no-files-found: error
+
+      # 关键：把签名结果作为 Release 附件发出去 —— 这样国内可以用 ghfast.top 加速下载，
+      # 不用再走 GitHub 的 artifacts（那个只从 Azure 走，国内极慢）。
+      - name: 发布到 Release（便于国内加速下载）
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          TAG="macos-signed-v1.2.3"
+          gh release view "$TAG" >/dev/null 2>&1 || \
+            gh release create "$TAG" --title "macOS 已签名包 1.2.3" \
+              --notes "ad-hoc 签名版，双击即可打开（首次若仍被拦，右键→打开）。"
+          gh release upload "$TAG" dist/*.zip dist/SHA256.txt --clobber
+          echo "=== 下载地址 ==="
+          echo "https://github.com/${{ github.repository }}/releases/download/$TAG/整句默写器-1.2.3-macOS-arm64-已签名.zip"
+          echo "（国内加速：在该地址前加 https://ghfast.top/ ）"
