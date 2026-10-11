@@ -87,20 +87,6 @@ jobs:
           mkdir -p "$GITHUB_WORKSPACE/build/res/engine"
           cp build/bin/llama-server "$GITHUB_WORKSPACE/build/res/engine/"
 
-      - name: 取 llama.cpp 官方 mac x64 预编译（Intel Mac 用）
-        run: |
-          set -e
-          TAG=$(curl -s https://api.github.com/repos/ggml-org/llama.cpp/releases | \
-                python3 -c "import sys,json;d=json.load(sys.stdin);print([r['tag_name'] for r in d if any('macos' in a['name'].lower() for a in r.get('assets',[]))][0])")
-          echo "llama.cpp tag = $TAG"
-          curl -sL -o /tmp/lx.tar.gz "https://github.com/ggml-org/llama.cpp/releases/download/$TAG/llama-$TAG-bin-macos-x64.tar.gz"
-          tar xzf /tmp/lx.tar.gz -C /tmp
-          mkdir -p build/res-x64/engine
-          cp -R /tmp/llama-$TAG/. build/res-x64/engine/
-          cp -R build/res/data build/res-x64/ 2>/dev/null || true
-          cp -R build/res/tools build/res-x64/ 2>/dev/null || true
-          ls build/res-x64/engine | head -3
-
       - name: 打包 .app（用 @electron/packager，禁止联网下载 Electron）
         working-directory: build/app
         env:
