@@ -87,7 +87,58 @@ jobs:
           mkdir -p "$GITHUB_WORKSPACE/build/res/engine"
           cp build/bin/llama-server "$GITHUB_WORKSPACE/build/res/engine/"
 
-      - name: 打包 dmg / zip
+      - name: 取 llama.cpp 官方 mac x64 预编译（Intel Mac 用）
+        run: |
+          set -e
+          TAG=$(curl -s https://api.github.com/repos/ggml-org/llama.cpp/releases | \
+                python3 -c "import sys,json;d=json.load(sys.stdin);print([r['tag_name'] for r in d if any('macos' in a['name'].lower() for a in r.get('assets',[]))][0])")
+          echo "llama.cpp tag = $TAG"
+          curl -sL -o /tmp/lx.tar.gz "https://github.com/ggml-org/llama.cpp/releases/download/$TAG/llama-$TAG-bin-macos-x64.tar.gz"
+          tar xzf /tmp/lx.tar.gz -C /tmp
+          mkdir -p build/res-x64/engine
+          cp -R /tmp/llama-$TAG/. build/res-x64/engine/
+          cp -R build/res/data build/res-x64/ 2>/dev/null || true
+          cp -R build/res/tools build/res-x64/ 2>/dev/null || true
+          ls build/res-x64/engine | head -3
+
+      - name: 打包 .app（用 @electron/packager，绕开 electron-builder 的下载问题）
+        working-directory: build/app
+        run: |
+          set -e
+          npm install --no-save --no-audit --no-fund @electron/packager
+          for ARCH in arm64 x64; do
+            if [ "$ARCH" = "arm64" ]; then RES=../res; else RES=../res-x64; fi
+            echo "=== 打包 $ARCH （资源目录 $RES）==="
+            ./node_modules/.bin/electron-packager . 整句默写器 \
+              --platform=darwin --arch=$ARCH \
+              --out=../out --overwrite \
+              --app-bundle-id=local.vocab.dictation --app-version=1.2.3 \
+              --app-copyright="学习工具" \
+              --icon=icon.icns \
+              --extra-resource=$RES/data \
+              --extra-resource=$RES/engine \
+              --extra-resource=$RES/tools
+          done
+          ls -la ../out
+
+      - name: ad-hoc 签名 + 打包 zip（这步只有 macOS 能做，能消掉"已损坏"）
+        run: |
+          set -e
+          mkdir -p dist
+          for d in build/out/*/; do
+            APP="$d整句默写器.app"
+            [ -d "$APP" ] || continue
+            echo "=== 签名 $APP ==="
+            codesign --force --deep --sign - "$APP" || echo "（签名警告，继续）"
+            codesign --verify --verbose=2 "$APP" || true
+            ARCH=$(basename "$d" | sed 's/.*-//')
+            (cd "$d" && zip -q -r -y "$GITHUB_WORKSPACE/dist/整句默写器-1.2.3-macOS-$ARCH.zip" 整句默写器.app)
+            echo "  → dist/整句默写器-1.2.3-macOS-$ARCH.zip"
+          done
+          ls -la dist
+
+      - name: 旧的 electron-builder 步骤（已停用）
+        if: false
         working-directory: build/app
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
@@ -114,9 +165,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: macos-dmg
-          path: |
-            build/out/*.dmg
-            build/out/*.zip
+          path: dist/*.zip
           if-no-files-found: warn
 
   linux:
