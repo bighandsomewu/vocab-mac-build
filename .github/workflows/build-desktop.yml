@@ -101,24 +101,26 @@ jobs:
           cp -R build/res/tools build/res-x64/ 2>/dev/null || true
           ls build/res-x64/engine | head -3
 
-      - name: 打包 .app（用 @electron/packager，绕开 electron-builder 的下载问题）
+      - name: 打包 .app（用 @electron/packager，禁止联网下载 Electron）
         working-directory: build/app
+        env:
+          # 关键：让 @electron/get 直接用 npm 已经装好的 electron，彻底不下载
+          ELECTRON_OVERRIDE_DIST_PATH: ${{ github.workspace }}/build/app/node_modules/electron/dist
+          ELECTRON_MIRROR: 'https://npmmirror.com/mirrors/electron/'
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
         run: |
           set -e
           npm install --no-save --no-audit --no-fund @electron/packager
-          for ARCH in arm64 x64; do
-            if [ "$ARCH" = "arm64" ]; then RES=../res; else RES=../res-x64; fi
-            echo "=== 打包 $ARCH （资源目录 $RES）==="
-            ./node_modules/.bin/electron-packager . 整句默写器 \
-              --platform=darwin --arch=$ARCH \
-              --out=../out --overwrite \
-              --app-bundle-id=local.vocab.dictation --app-version=1.2.3 \
-              --app-copyright="学习工具" \
-              --icon=icon.icns \
-              --extra-resource=$RES/data \
-              --extra-resource=$RES/engine \
-              --extra-resource=$RES/tools
-          done
+          echo "OVERRIDE=$ELECTRON_OVERRIDE_DIST_PATH"; ls "$ELECTRON_OVERRIDE_DIST_PATH" | head -5
+          echo "=== 打包 arm64（Apple 芯片）==="
+          ./node_modules/.bin/electron-packager . 整句默写器 \
+            --platform=darwin --arch=arm64 \
+            --out=../out --overwrite \
+            --app-bundle-id=local.vocab.dictation --app-version=1.2.3 \
+            --icon=icon.icns \
+            --extra-resource=../res/data \
+            --extra-resource=../res/engine \
+            --extra-resource=../res/tools
           ls -la ../out
 
       - name: ad-hoc 签名 + 打包 zip（这步只有 macOS 能做，能消掉"已损坏"）
@@ -135,6 +137,7 @@ jobs:
             (cd "$d" && zip -q -r -y "$GITHUB_WORKSPACE/dist/整句默写器-1.2.3-macOS-$ARCH.zip" 整句默写器.app)
             echo "  → dist/整句默写器-1.2.3-macOS-$ARCH.zip"
           done
+          ls -la "$GITHUB_WORKSPACE/dist" 2>/dev/null || ls -la dist
           ls -la dist
 
       - name: 旧的 electron-builder 步骤（已停用）
